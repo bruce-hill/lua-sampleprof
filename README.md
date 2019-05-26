@@ -6,6 +6,8 @@ observation has overhead. With a reasonable sample size, it's easy to get a
 clear picture of which parts of the codebase are taking up most of the time,
 while allowing the code to run almost unaffected.
 
+![Preview](https://bitbucket.org/spilt/sampleprof/downloads/sampleprof.png)
+
 ## Usage
 The Lua library returns a single function, which takes a function to run,
 performs sample profiling on it, and gives a table of results. The results
