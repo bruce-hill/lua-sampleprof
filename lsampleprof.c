@@ -14,7 +14,7 @@
 *  The results table is a mapping from "file:line" -> number of times a random sample landed on that line
 */
 
-// ualarm() and sigaction() are POSIX/XSI extensions, which -std=c11 hides
+// setitimer() and sigaction() are POSIX/XSI extensions, which -std=c11 hides
 // unless a feature-test macro is defined (glibc needs this; macOS and OpenBSD
 // expose them by default)
 #define _DEFAULT_SOURCE
@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/time.h>
 #include <math.h>
 
 #define DEFAULT_BACKPROP 0.619
@@ -36,12 +37,25 @@ static lua_State *lastL;
 static lua_Number backprop = DEFAULT_BACKPROP;
 static lua_Number rate = DEFAULT_RATE;
 
+// Arm a one-shot timer that counts CPU time used by this process, so that
+// time spent blocked (I/O, sleep) isn't sampled
 static inline void randomalarm(void)
 {
     // Exponential decay:
     int r = rand();
     useconds_t delay = (useconds_t)(-log((double)r/(double)RAND_MAX) * 1e3 / rate);
-    ualarm(1 + delay, 0);
+    struct itimerval timer;
+    memset(&timer, 0, sizeof(timer));
+    timer.it_value.tv_sec = (time_t)((1 + delay) / 1000000);
+    timer.it_value.tv_usec = (suseconds_t)((1 + delay) % 1000000);
+    setitimer(ITIMER_PROF, &timer, NULL);
+}
+
+static inline void disarmtimer(void)
+{
+    struct itimerval timer;
+    memset(&timer, 0, sizeof(timer));
+    setitimer(ITIMER_PROF, &timer, NULL);
 }
 
 static inline void bump(lua_State *L, lua_Debug *ar, lua_Number amount)
@@ -106,7 +120,7 @@ static int Lwrap(lua_State *L)
     memset(&newaction, 0, sizeof(newaction));
     newaction.sa_handler = handler;
     newaction.sa_flags = SA_NODEFER;
-    sigaction(SIGALRM, &newaction, &oldaction);
+    sigaction(SIGPROF, &newaction, &oldaction);
     randomalarm();
 
     // Start each call with a fresh results table
@@ -117,13 +131,13 @@ static int Lwrap(lua_State *L)
     lastL = L;
     int status = lua_pcall(L, lua_gettop(L)-1, 0, 0);
 
-    // Ignore SIGALRM and cancel the timer before removing the hook, so a
+    // Ignore SIGPROF and cancel the timer before removing the hook, so a
     // signal that is still in flight can't re-install the hook afterward
     newaction.sa_handler = SIG_IGN;
-    sigaction(SIGALRM, &newaction, NULL);
-    alarm(0);
+    sigaction(SIGPROF, &newaction, NULL);
+    disarmtimer();
     lua_sethook(L, NULL, 0, 0);
-    sigaction(SIGALRM, &oldaction, NULL);
+    sigaction(SIGPROF, &oldaction, NULL);
     lastL = NULL;
 
     backprop = DEFAULT_BACKPROP;
