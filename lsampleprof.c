@@ -14,6 +14,11 @@
 *  The results table is a mapping from "file:line" -> number of times a random sample landed on that line
 */
 
+// ualarm() and sigaction() are POSIX/XSI extensions, which -std=c11 hides
+// unless a feature-test macro is defined (glibc needs this; macOS and OpenBSD
+// expose them by default)
+#define _DEFAULT_SOURCE
+
 #include "lua.h"
 #include "lauxlib.h"
 
@@ -31,11 +36,11 @@ static lua_State *lastL;
 static lua_Number backprop = DEFAULT_BACKPROP;
 static lua_Number rate = DEFAULT_RATE;
 
-static inline void randomalarm()
+static inline void randomalarm(void)
 {
     // Exponential decay:
     int r = rand();
-    int delay = -log((double)r/(double)RAND_MAX) * 1e3 / rate;
+    useconds_t delay = (useconds_t)(-log((double)r/(double)RAND_MAX) * 1e3 / rate);
     ualarm(1 + delay, 0);
 }
 
@@ -79,7 +84,8 @@ static void ltakesample(lua_State *L, lua_Debug *ar)
 static void handler(int sig)
 {
     (void)sig;
-    lua_sethook(lastL, ltakesample, LUA_MASKLINE, 0);
+    if (lastL)
+        lua_sethook(lastL, ltakesample, LUA_MASKLINE, 0);
 }
 
 static int Lwrap(lua_State *L)
@@ -103,14 +109,22 @@ static int Lwrap(lua_State *L)
     randomalarm();
 
     lastL = L;
-    lua_call(L, lua_gettop(L)-1, 0);
-    lua_sethook(L, NULL, 0, 0);
+    int status = lua_pcall(L, lua_gettop(L)-1, 0, 0);
 
+    // Ignore SIGALRM and cancel the timer before removing the hook, so a
+    // signal that is still in flight can't re-install the hook afterward
+    newaction.sa_handler = SIG_IGN;
+    sigaction(SIGALRM, &newaction, NULL);
     alarm(0);
-    //sigaction(SIGALRM, &oldaction, NULL);
+    lua_sethook(L, NULL, 0, 0);
+    sigaction(SIGALRM, &oldaction, NULL);
+    lastL = NULL;
 
     backprop = DEFAULT_BACKPROP;
     rate = DEFAULT_RATE;
+
+    if (status != LUA_OK)
+        return lua_error(L);
 
     lua_pushlightuserdata(L, &lastL);
     lua_gettable(L, LUA_REGISTRYINDEX);
@@ -118,6 +132,7 @@ static int Lwrap(lua_State *L)
     return 1;
 }
 
+LUALIB_API int luaopen_sampleprof(lua_State *L);
 LUALIB_API int luaopen_sampleprof(lua_State *L)
 {
     lua_pushlightuserdata(L, &lastL);

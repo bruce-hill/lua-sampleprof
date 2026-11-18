@@ -1,16 +1,37 @@
 # makefile for sampleprof library for Lua
 
-LUA_DIR=/usr/local
-LUA_INC= $(LUA_DIR)/include
-LUA_BIN= $(LUA_DIR)/bin
-LUA= lua
+UNAME_S:= $(shell uname -s)
 
-CC= gcc
-CFLAGS= $(INCS) $(WARN) -O3 $G
-WARN= -std=c11 -pedantic -Wall -Wextra
+# Lua headers and interpreter. Override on the command line if needed, e.g.
+#   make LUA_INC=/usr/include/lua5.4
+ifeq ($(UNAME_S),Linux)
+LUA_DIR?= /usr
+else
+LUA_DIR?= /usr/local
+endif
+LUA_INC?= $(LUA_DIR)/include
+LUA_BIN?= $(LUA_DIR)/bin
+LUA?= lua
+
+CC?= cc
 INCS= -I$(LUA_INC)
-#MAKESO= $(CC) $(CFLAGS) -shared
+
+# Warnings are kept to what gcc and clang both understand, so the same flags
+# work on Linux, macOS, and OpenBSD. -Werror is deliberately not included;
+# add it locally with `make WERROR=-Werror`
+WARN= -std=c11 -pedantic -Wall -Wextra -Wformat=2 -Wshadow \
+	-Wconversion -Wsign-conversion -Wdouble-promotion \
+	-Wcast-align -Wcast-qual -Wstrict-prototypes -Wmissing-prototypes \
+	-Wold-style-definition -Wundef -Wimplicit-fallthrough -Wvla \
+	-Wjump-misses-init $(WERROR)
+CFLAGS= $(INCS) $(WARN) -fPIC -O3 $G
+LDLIBS= -lm
+
+ifeq ($(UNAME_S),Darwin)
 MAKESO= $(CC) $(CFLAGS) -bundle -undefined dynamic_lookup
+else
+MAKESO= $(CC) $(CFLAGS) -shared
+endif
 
 MYNAME= sampleprof
 MYLIB= l$(MYNAME)
@@ -29,7 +50,7 @@ o:	$(MYLIB).o
 so:	$T
 
 $T:	$(OBJS)
-	$(MAKESO) -o $@ $(OBJS)
+	$(MAKESO) -o $@ $(OBJS) $(LDLIBS)
 
 $(OBJS): $(MYLIB).c
 

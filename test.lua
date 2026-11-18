@@ -2,13 +2,13 @@ local sample = require('sampleprof')
 
 local foo = function()
     for i=1,1000 do
-        i = i + 1
+        local _ = i + 1
     end
 end
 
 local baz = function()
     for i=1,500 do
-        i = i + 1
+        local _ = i + 1
     end
 end
 
