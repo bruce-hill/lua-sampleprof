@@ -96,7 +96,7 @@ static int Lwrap(lua_State *L)
     }
 
     struct sigaction newaction, oldaction;
-    memset(&newaction, sizeof(newaction), 0);
+    memset(&newaction, 0, sizeof(newaction));
     newaction.sa_handler = handler;
     newaction.sa_flags = SA_NODEFER;
     sigaction(SIGALRM, &newaction, &oldaction);
