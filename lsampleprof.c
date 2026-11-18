@@ -72,7 +72,8 @@ static void ltakesample(lua_State *L, lua_Debug *ar)
     lua_Number weight = 1.0;
     bump(L, ar, weight);
     lua_Debug ar2;
-    for (int i = 0; lua_getstack(L, i, &ar2); i++) {
+    // Level 0 is the current frame, already tallied above, so start at 1
+    for (int i = 1; lua_getstack(L, i, &ar2); i++) {
         weight *= backprop;
         bump(L, &ar2, weight);
     }
@@ -108,6 +109,11 @@ static int Lwrap(lua_State *L)
     sigaction(SIGALRM, &newaction, &oldaction);
     randomalarm();
 
+    // Start each call with a fresh results table
+    lua_pushlightuserdata(L, &lastL);
+    lua_createtable(L, 0, 128);
+    lua_settable(L, LUA_REGISTRYINDEX);
+
     lastL = L;
     int status = lua_pcall(L, lua_gettop(L)-1, 0, 0);
 
@@ -135,9 +141,6 @@ static int Lwrap(lua_State *L)
 LUALIB_API int luaopen_sampleprof(lua_State *L);
 LUALIB_API int luaopen_sampleprof(lua_State *L)
 {
-    lua_pushlightuserdata(L, &lastL);
-    lua_createtable(L, 0, 128);
-    lua_settable(L, LUA_REGISTRYINDEX);
     lua_pushcfunction(L, Lwrap);
     return 1;
 }

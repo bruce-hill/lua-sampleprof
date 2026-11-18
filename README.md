@@ -9,11 +9,36 @@ while allowing the code to run almost unaffected.
 ![Preview](https://bitbucket.org/spilt/sampleprof/downloads/sampleprof.png)
 
 ## Usage
-The Lua library returns a single function, which takes a function to run,
-performs sample profiling on it, and gives a table of results. The results
-table is a mapping from `"filename.lua:line"` to number of samples. By default,
-samples are propagated up the callstack, with a decay (0.619).
+The Lua library returns a single function with the signature:
+```lua
+profile = sample([backprop], [rate], fn, ...)
+```
+It calls `fn(...)` under the profiler and returns a table mapping
+`"filename.lua:line"` to a weighted sample count. Each call returns a fresh
+table.
+
+- `backprop` (default `0.619`) controls how samples propagate up the callstack.
+  `0` tallies only the current line. `1` tallies the current line and every
+  caller equally. `0.5` gives each caller half the weight of the frame below it.
+- `rate` (default `100`) is the average number of samples per millisecond.
+
 ```lua
 local sample = require('sampleprof')
-local profile = sample(fn)
+local profile = sample(fn, arg1, arg2)
+local profile = sample(1, 100, fn, arg1, arg2)  -- backprop=1, rate=100
 ```
+
+If `fn` raises an error, `sample` re-raises it after cleaning up.
+
+## Limitations
+- **Samples land on the next line executed.** The signal only arms a Lua line
+  hook, so time spent inside a long C function is charged to the line after the
+  call returns.
+- **Wall-clock time.** Sampling uses a real-time timer, so blocking I/O and
+  sleeps are counted. This is not CPU-only profiling.
+- **Process-wide timer and `SIGALRM`.** `sample` replaces the `SIGALRM` handler,
+  cancels any pending `alarm()`, and restores the previous handler on return.
+  Don't use `SIGALRM` or `alarm()` in code being profiled.
+- **Not reentrant, and coroutines aren't covered.** Don't call `sample` from
+  inside a profiled function. The hook is installed only on the thread that
+  called `sample`, so code running in coroutines isn't sampled.
