@@ -8,27 +8,51 @@ while allowing the code to run almost unaffected.
 
 ![Preview](https://bitbucket.org/spilt/sampleprof/downloads/sampleprof.png)
 
+## Building
+`make` builds the C core, `sampleprof_core.so`. The library is made of two
+files: `sampleprof.lua` (the module you `require`) goes on your
+`package.path`, and `sampleprof_core.so` goes on your `package.cpath`. Run
+`make test` to build and run the tests, and `make test-moon` to run the
+source map test, which requires MoonScript.
+
 ## Usage
-The Lua library returns a single function with the signature:
 ```lua
-profile = sample([backprop], [rate], fn, ...)
+local sampleprof = require('sampleprof')
+local sample = sampleprof.sample
+
+profile = sample(fn, ...)            -- default options
+profile = sample(opts, fn, ...)      -- with options
 ```
-It calls `fn(...)` under the profiler and returns a table mapping
-`"filename.lua:line"` to a weighted sample count. Each call returns a fresh
-table.
+`sample` calls `fn(...)` under the profiler and returns a table mapping
+`"file:line"` to a weighted sample count. Each call returns a fresh table.
+If `fn` raises an error, `sample` re-raises it after cleaning up.
+
+`opts` is an optional table with these fields:
 
 - `backprop` (default `0.619`) controls how samples propagate up the callstack.
   `0` tallies only the current line. `1` tallies the current line and every
   caller equally. `0.5` gives each caller half the weight of the frame below it.
 - `rate` (default `100`) is the average number of samples per millisecond.
+- `sourcemap` (optional) maps `"file:line"` keys of the running code to
+  `"file:line"` keys of the original source, e.g.
+  `{["gen.lua:12"] = "app.xyz:40"}`. Lines without an entry keep their key.
+  Remapping happens once, after sampling, so it adds no cost while sampling.
+  Samples from several lines that map to the same key are added together.
 
 ```lua
-local sample = require('sampleprof')
-local profile = sample(fn, arg1, arg2)
-local profile = sample(1, 100, fn, arg1, arg2)  -- backprop=1, rate=100
+local profile = sample({backprop=1, rate=100}, fn, arg1, arg2)
+local profile = sample({sourcemap=map}, fn)
 ```
 
-If `fn` raises an error, `sample` re-raises it after cleaning up.
+### Heatmap
+`sampleprof.heatmap(profile, filename)` prints the source of `filename` to
+stdout, colored by how many samples each line received. Lines with no samples
+are shown in gray. Use the original filename here when the profile was
+remapped with a `sourcemap`.
+
+```lua
+sampleprof.heatmap(profile, 'test.lua')
+```
 
 ## Limitations
 - **Samples land on the next line executed.** The signal only arms a Lua hook,

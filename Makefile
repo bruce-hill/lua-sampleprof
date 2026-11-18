@@ -12,6 +12,7 @@ endif
 LUA_INC?= $(LUA_DIR)/include
 LUA_BIN?= $(LUA_DIR)/bin
 LUA?= lua
+MOON?= moon
 
 CC?= cc
 INCS= -I$(LUA_INC)
@@ -35,15 +36,20 @@ endif
 
 MYNAME= sampleprof
 MYLIB= l$(MYNAME)
-T= $(MYNAME).so
+T= $(MYNAME)_core.so
 OBJS= $(MYLIB).o
 TEST= test.lua
+TEST_MOON= test_moon.moon
 
 all: $T
 
-.PHONY: test
+.PHONY: test test-moon
 test: $T
 	$(LUA_BIN)/$(LUA) $(TEST)
+
+# Requires MoonScript
+test-moon: $T
+	$(MOON) $(TEST_MOON)
 
 o:	$(MYLIB).o
 

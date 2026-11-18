@@ -1,16 +1,22 @@
 /*
 * lsampleprof.c
-* A Lua sample profiling library by Bruce Hill. This library returns a single
-* function of the form profile([backprop=.619, [rate=100]], fn, ...)
+* The C core of a Lua sample profiling library by Bruce Hill. Users should
+* require 'sampleprof' (sampleprof.lua), which wraps this module. This module
+* exports a single function:
+*
+*    collect(skipsource, backprop, rate, fn, ...)
+*
 * that runs `fn` with any extra args, performs sample profiling, and
 * returns a table of the results.
 *
+*    - `skipsource` frames whose source equals this string are left out of the results
+*       (the wrapper passes its own source, so it doesn't show up in profiles)
 *    - `rate` the average number of samples per millisecond
 *    - `backprop` controls how weights are propagated up the callstack. 0 means "only tally
 *       the current line", 1 means "tally the current line and everything above it in the
 *       callstack equally", 0.5 means "tally each line with half weight of the thing below
 *       it in the callstack"
-*  
+*
 *  The results table is a mapping from "file:line" -> number of times a random sample landed on that line
 */
 
@@ -30,12 +36,10 @@
 #include <sys/time.h>
 #include <math.h>
 
-#define DEFAULT_BACKPROP 0.619
-#define DEFAULT_RATE 100
-
 static lua_State *lastL;
-static lua_Number backprop = DEFAULT_BACKPROP;
-static lua_Number rate = DEFAULT_RATE;
+static lua_Number backprop;
+static lua_Number rate;
+static const char *skipsource;
 
 // Arm a one-shot real-time timer. ITIMER_REAL has fine enough resolution to
 // honor the sampling rate, unlike ITIMER_PROF, which only ticks with the kernel
@@ -91,18 +95,17 @@ static void ltakesample(lua_State *L, lua_Debug *ar)
     lua_pushlightuserdata(L, &lastL);
     lua_gettable(L, LUA_REGISTRYINDEX);
 
-    // Time spent in a C function is charged to the Lua line that called it,
-    // so skip any C frames at the top of the stack
-    int level = 0;
-    while (lua_getstack(L, level, &ar2)) {
-        lua_getinfo(L, "S", &ar2);
-        if (strcmp(ar2.what, "C") != 0)
-            break;
-        level++;
-    }
-
     lua_Number weight = 1.0;
-    for (; lua_getstack(L, level, &ar2); level++) {
+    int top = 1;
+    for (int level = 0; lua_getstack(L, level, &ar2); level++) {
+        lua_getinfo(L, "S", &ar2);
+        if (skipsource && strcmp(ar2.source, skipsource) == 0)
+            continue;
+        // Time spent in a C function is charged to the Lua line that called
+        // it, so skip any C frames at the top of the stack
+        if (top && strcmp(ar2.what, "C") == 0)
+            continue;
+        top = 0;
         bump(L, &ar2, weight);
         weight *= backprop;
     }
@@ -118,18 +121,27 @@ static void handler(int sig)
         lua_sethook(lastL, ltakesample, LUA_MASKLINE | LUA_MASKRET, 0);
 }
 
-static int Lwrap(lua_State *L)
+static int Lcollect(lua_State *L)
 {
-    // Backprop
-    if (lua_type(L, 1) == LUA_TNUMBER) {
-        backprop = lua_tonumber(L, 1);
-        lua_remove(L, 1);
-    }
-    // Sampling rate
-    if (lua_type(L, 1) == LUA_TNUMBER) {
-        rate = lua_tonumber(L, 1);
-        lua_remove(L, 1);
-    }
+    // The source string stays on the stack for the whole call, so the pointer
+    // remains valid until we return
+    const char *new_skipsource = luaL_checkstring(L, 1);
+    lua_Number new_backprop = luaL_checknumber(L, 2);
+    lua_Number new_rate = luaL_checknumber(L, 3);
+    luaL_checktype(L, 4, LUA_TFUNCTION);
+    skipsource = new_skipsource;
+    backprop = new_backprop;
+    rate = new_rate;
+
+    // Start each call with a fresh results table
+    lua_pushlightuserdata(L, &lastL);
+    lua_createtable(L, 0, 128);
+    lua_settable(L, LUA_REGISTRYINDEX);
+
+    // lastL must be set before the timer is armed: if the first alarm fired
+    // while it was still NULL, the handler would do nothing, the timer would
+    // never be re-armed, and the whole call would get no samples
+    lastL = L;
 
     struct sigaction newaction, oldaction;
     memset(&newaction, 0, sizeof(newaction));
@@ -138,13 +150,8 @@ static int Lwrap(lua_State *L)
     sigaction(SIGALRM, &newaction, &oldaction);
     randomalarm();
 
-    // Start each call with a fresh results table
-    lua_pushlightuserdata(L, &lastL);
-    lua_createtable(L, 0, 128);
-    lua_settable(L, LUA_REGISTRYINDEX);
-
-    lastL = L;
-    int status = lua_pcall(L, lua_gettop(L)-1, 0, 0);
+    // Call `fn` (argument 4) with everything above it
+    int status = lua_pcall(L, lua_gettop(L) - 4, 0, 0);
 
     // Ignore SIGALRM and cancel the timer before removing the hook, so a
     // signal that is still in flight can't re-install the hook afterward
@@ -154,9 +161,7 @@ static int Lwrap(lua_State *L)
     lua_sethook(L, NULL, 0, 0);
     sigaction(SIGALRM, &oldaction, NULL);
     lastL = NULL;
-
-    backprop = DEFAULT_BACKPROP;
-    rate = DEFAULT_RATE;
+    skipsource = NULL;
 
     if (status != LUA_OK)
         return lua_error(L);
@@ -167,9 +172,13 @@ static int Lwrap(lua_State *L)
     return 1;
 }
 
-LUALIB_API int luaopen_sampleprof(lua_State *L);
-LUALIB_API int luaopen_sampleprof(lua_State *L)
+LUALIB_API int luaopen_sampleprof_core(lua_State *L);
+LUALIB_API int luaopen_sampleprof_core(lua_State *L)
 {
-    lua_pushcfunction(L, Lwrap);
+    static const luaL_Reg functions[] = {
+        {"collect", Lcollect},
+        {NULL, NULL},
+    };
+    luaL_newlib(L, functions);
     return 1;
 }
