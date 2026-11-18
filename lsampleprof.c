@@ -37,8 +37,8 @@ static lua_State *lastL;
 static lua_Number backprop = DEFAULT_BACKPROP;
 static lua_Number rate = DEFAULT_RATE;
 
-// Arm a one-shot timer that counts CPU time used by this process, so that
-// time spent blocked (I/O, sleep) isn't sampled
+// Arm a one-shot real-time timer. ITIMER_REAL has fine enough resolution to
+// honor the sampling rate, unlike ITIMER_PROF, which only ticks with the kernel
 static inline void randomalarm(void)
 {
     // Exponential decay:
@@ -48,14 +48,14 @@ static inline void randomalarm(void)
     memset(&timer, 0, sizeof(timer));
     timer.it_value.tv_sec = (time_t)((1 + delay) / 1000000);
     timer.it_value.tv_usec = (suseconds_t)((1 + delay) % 1000000);
-    setitimer(ITIMER_PROF, &timer, NULL);
+    setitimer(ITIMER_REAL, &timer, NULL);
 }
 
 static inline void disarmtimer(void)
 {
     struct itimerval timer;
     memset(&timer, 0, sizeof(timer));
-    setitimer(ITIMER_PROF, &timer, NULL);
+    setitimer(ITIMER_REAL, &timer, NULL);
 }
 
 static inline void bump(lua_State *L, lua_Debug *ar, lua_Number amount)
@@ -80,16 +80,31 @@ static inline void bump(lua_State *L, lua_Debug *ar, lua_Number amount)
 
 static void ltakesample(lua_State *L, lua_Debug *ar)
 {
+    lua_Debug ar2;
+    lua_getstack(L, 0, &ar2);
+    lua_getinfo(L, "S", &ar2);
+    // A return from a Lua function means the signal landed in Lua code, so
+    // wait for the next line rather than sampling the return point
+    if (ar->event == LUA_HOOKRET && strcmp(ar2.what, "C") != 0)
+        return;
+
     lua_pushlightuserdata(L, &lastL);
     lua_gettable(L, LUA_REGISTRYINDEX);
 
+    // Time spent in a C function is charged to the Lua line that called it,
+    // so skip any C frames at the top of the stack
+    int level = 0;
+    while (lua_getstack(L, level, &ar2)) {
+        lua_getinfo(L, "S", &ar2);
+        if (strcmp(ar2.what, "C") != 0)
+            break;
+        level++;
+    }
+
     lua_Number weight = 1.0;
-    bump(L, ar, weight);
-    lua_Debug ar2;
-    // Level 0 is the current frame, already tallied above, so start at 1
-    for (int i = 1; lua_getstack(L, i, &ar2); i++) {
-        weight *= backprop;
+    for (; lua_getstack(L, level, &ar2); level++) {
         bump(L, &ar2, weight);
+        weight *= backprop;
     }
     // Disable hook and set alarm
     lua_sethook(lastL, NULL, 0, 0);
@@ -100,7 +115,7 @@ static void handler(int sig)
 {
     (void)sig;
     if (lastL)
-        lua_sethook(lastL, ltakesample, LUA_MASKLINE, 0);
+        lua_sethook(lastL, ltakesample, LUA_MASKLINE | LUA_MASKRET, 0);
 }
 
 static int Lwrap(lua_State *L)
@@ -120,7 +135,7 @@ static int Lwrap(lua_State *L)
     memset(&newaction, 0, sizeof(newaction));
     newaction.sa_handler = handler;
     newaction.sa_flags = SA_NODEFER;
-    sigaction(SIGPROF, &newaction, &oldaction);
+    sigaction(SIGALRM, &newaction, &oldaction);
     randomalarm();
 
     // Start each call with a fresh results table
@@ -131,13 +146,13 @@ static int Lwrap(lua_State *L)
     lastL = L;
     int status = lua_pcall(L, lua_gettop(L)-1, 0, 0);
 
-    // Ignore SIGPROF and cancel the timer before removing the hook, so a
+    // Ignore SIGALRM and cancel the timer before removing the hook, so a
     // signal that is still in flight can't re-install the hook afterward
     newaction.sa_handler = SIG_IGN;
-    sigaction(SIGPROF, &newaction, NULL);
+    sigaction(SIGALRM, &newaction, NULL);
     disarmtimer();
     lua_sethook(L, NULL, 0, 0);
-    sigaction(SIGPROF, &oldaction, NULL);
+    sigaction(SIGALRM, &oldaction, NULL);
     lastL = NULL;
 
     backprop = DEFAULT_BACKPROP;

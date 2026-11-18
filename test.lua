@@ -23,6 +23,29 @@ end, 23)
         
 assert(profile)
 
+-- Time spent inside a C function should be charged to the line that called it,
+-- not to the line that runs after the call returns
+collectgarbage('restart')
+local function linenumber(pattern)
+    local n = 0
+    for line in io.lines('test.lua') do
+        n = n + 1
+        if line:find(pattern) then return n end
+    end
+end
+local callline = linenumber("%-%-%s*call$")
+local nextline = linenumber("%-%-%s*next$")
+local cprofile = sample(1, 100, function()
+    for i=1,300 do
+        local s = string.rep("x", 2^20) -- call
+        s = nil -- next
+    end
+end)
+local callsamples = cprofile[('test.lua:%d'):format(callline)] or 0
+local nextsamples = cprofile[('test.lua:%d'):format(nextline)] or 0
+assert(callsamples > 5 * nextsamples,
+    ("C call got %d samples, the following line got %d"):format(callsamples, nextsamples))
+
 -- Print a heatmap of the results:
 if arg[1] == '-p' then
     local f = io.open('test.lua')

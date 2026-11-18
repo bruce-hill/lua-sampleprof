@@ -31,15 +31,17 @@ local profile = sample(1, 100, fn, arg1, arg2)  -- backprop=1, rate=100
 If `fn` raises an error, `sample` re-raises it after cleaning up.
 
 ## Limitations
-- **Samples land on the next line executed.** The signal only arms a Lua line
-  hook, so time spent inside a long C function is charged to the line after the
-  call returns.
-- **CPU time only.** Sampling uses a CPU-time timer (`ITIMER_PROF`), so time
-  spent blocked on I/O or sleeping isn't sampled.
-- **Process-wide timer and `SIGPROF`.** `sample` replaces the `SIGPROF` handler
-  and uses the process's profiling timer, and restores the previous handler on
-  return. Don't use `SIGPROF` or `setitimer(ITIMER_PROF)` in code being
-  profiled.
+- **Samples land on the next line executed.** The signal only arms a Lua hook,
+  so a sample taken in the middle of a Lua line is charged to the next line
+  that runs. Time spent inside a C function is charged to the Lua line that
+  called it, even though it's only observed when the call returns.
+- **Wall-clock time.** Sampling uses a real-time timer (`ITIMER_REAL`), so time
+  spent blocked on I/O or sleeping is sampled too. A CPU-time timer
+  (`ITIMER_PROF`) only ticks with the kernel clock, which is too coarse to honor
+  `rate`.
+- **Process-wide timer and `SIGALRM`.** `sample` replaces the `SIGALRM` handler,
+  cancels any pending `alarm()`, and restores the previous handler on return.
+  Don't use `SIGALRM` or `alarm()` in code being profiled.
 - **Not reentrant, and coroutines aren't covered.** Don't call `sample` from
   inside a profiled function. The hook is installed only on the thread that
   called `sample`, so code running in coroutines isn't sampled.
